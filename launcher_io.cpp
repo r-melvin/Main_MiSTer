@@ -225,7 +225,7 @@ static void get_known_hosts_path(char *out, size_t out_sz)
     snprintf(out, out_sz, "%s/known_hosts", base);
 }
 
-/* Called inside the child process after fork() to exec ssh or scp securely.
+/* Called inside a child process after fork() to exec ssh for remote listing.
  *
  * Security properties:
  *  - Key auth (sftp_key_path set): uses ssh -i, no password involved.
@@ -238,53 +238,39 @@ static void get_known_hosts_path(char *out, size_t out_sz)
  *  - LogLevel=ERROR: suppresses SSH banners but keeps real error messages.
  *
  * Parameters:
- *  is_scp      – true for file download (scp), false for listing (ssh).
  *  port_str    – port as a string, e.g. "22".
  *  known_hosts – full path to the known_hosts file.
  *  host_str    – "user@host"
- *  extra_argv  – NULL-terminated list of args appended after the host:
- *                  ssh:  { "ls -1 /games/SNES/ 2>/dev/null", NULL }
- *                  scp:  { "user@host:/games/SNES/game.sfc", "/tmp/…", NULL }
- *                (for scp the host_str arg is unused; caller puts host in extra_argv)
+ *  extra_argv  – NULL-terminated list of args appended after the host,
+ *                e.g. { "ls -1 /games/SNES/ 2>/dev/null", NULL }
  *
  * Never returns on success (exec replaces the process image).
  * Calls _exit(1) on failure.
  */
-static void exec_ssh_child(bool is_scp, const char *port_str,
+static void exec_ssh_child(const char *port_str,
                             const char *known_hosts, const char *host_str,
                             char *const extra_argv[])
 {
-    /* Redirect stderr to /dev/null to prevent SSH banners polluting output */
     int devnull = open("/dev/null", O_WRONLY);
     if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
 
-    /* Common -o options shared by ssh and scp */
     char kh_opt[580];
     snprintf(kh_opt, sizeof(kh_opt), "UserKnownHostsFile=%s", known_hosts);
 
-    /* Build argv.  Maximum slots needed:
-       sshpass(1) -e(1) ssh/scp(1) -p(2) -o×5(10) -i(2) host(1) extras(~3) NULL = ~22 */
+    /* sshpass(1) -e(1) ssh(1) -p(2) -o×5(10) -i(2) host(1) extras(~2) NULL = ~21 */
     char *argv[32];
     int i = 0;
 
     bool use_key = cfg.sftp_key_path[0] != '\0';
 
     if (!use_key) {
-        /* Pass password via SSHPASS env var, not command line, so it is
-           invisible to `ps aux` and /proc/pid/cmdline.               */
         setenv("SSHPASS", cfg.sftp_pass, 1);
         argv[i++] = (char *)"sshpass";
-        argv[i++] = (char *)"-e";   /* read password from SSHPASS env var */
+        argv[i++] = (char *)"-e";
     }
 
-    argv[i++] = (char *)(is_scp ? "scp" : "ssh");
-
-    if (is_scp) {
-        argv[i++] = (char *)"-P"; argv[i++] = (char *)port_str;
-    } else {
-        argv[i++] = (char *)"-p"; argv[i++] = (char *)port_str;
-    }
-
+    argv[i++] = (char *)"ssh";
+    argv[i++] = (char *)"-p"; argv[i++] = (char *)port_str;
     argv[i++] = (char *)"-o"; argv[i++] = (char *)"StrictHostKeyChecking=accept-new";
     argv[i++] = (char *)"-o"; argv[i++] = kh_opt;
     argv[i++] = (char *)"-o"; argv[i++] = (char *)"ConnectTimeout=10";
@@ -292,11 +278,9 @@ static void exec_ssh_child(bool is_scp, const char *port_str,
     argv[i++] = (char *)"-o"; argv[i++] = (char *)"LogLevel=ERROR";
 
     if (use_key) {
-        /* Warn if key file permissions are too open (should be 0600) */
         struct stat kst;
         if (stat(cfg.sftp_key_path, &kst) == 0 &&
             (kst.st_mode & (S_IRWXG | S_IRWXO))) {
-            /* SSH itself will refuse the key if perms are wrong; log for debugging */
             dprintf(STDERR_FILENO,
                     "launcher: WARNING: key %s has loose permissions\n",
                     cfg.sftp_key_path);
@@ -304,10 +288,7 @@ static void exec_ssh_child(bool is_scp, const char *port_str,
         argv[i++] = (char *)"-i"; argv[i++] = cfg.sftp_key_path;
     }
 
-    /* For ssh (listing), append host then command.
-       For scp, extra_argv already contains "user@host:path" and dest. */
-    if (!is_scp)
-        argv[i++] = (char *)host_str;
+    argv[i++] = (char *)host_str;
 
     for (int j = 0; extra_argv[j]; j++)
         argv[i++] = extra_argv[j];
@@ -315,7 +296,74 @@ static void exec_ssh_child(bool is_scp, const char *port_str,
     argv[i] = NULL;
 
     execvp(argv[0], argv);
-    _exit(1);  /* exec failed */
+    _exit(1);
+}
+
+/* Called inside a child process after fork() to exec rsync for file download.
+ *
+ * Uses rsync over SSH so downloads benefit from delta transfer and --partial
+ * resumption: if the transfer is interrupted, the next attempt picks up where
+ * it left off rather than restarting from scratch.
+ *
+ * The SSH command is passed to rsync via -e so all the same security options
+ * (StrictHostKeyChecking, known_hosts, BatchMode) apply as for direct SSH.
+ *
+ * Never returns on success; calls _exit(1) on failure.
+ */
+static void exec_rsync_child(const char *port_str,
+                              const char *known_hosts,
+                              const char *remote_src,  /* "user@host:remote_path" */
+                              const char *local_dest)
+{
+    int devnull = open("/dev/null", O_WRONLY);
+    if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
+
+    bool use_key = cfg.sftp_key_path[0] != '\0';
+
+    /* Build the ssh command string rsync passes to /bin/sh -c via -e.
+       Single-quote option values that may contain path characters. */
+    char ssh_cmd[1024];
+    if (use_key) {
+        snprintf(ssh_cmd, sizeof(ssh_cmd),
+                 "ssh -p %s"
+                 " -o StrictHostKeyChecking=accept-new"
+                 " -o 'UserKnownHostsFile=%s'"
+                 " -o ConnectTimeout=10"
+                 " -o BatchMode=yes"
+                 " -o LogLevel=ERROR"
+                 " -i '%s'",
+                 port_str, known_hosts, cfg.sftp_key_path);
+    } else {
+        snprintf(ssh_cmd, sizeof(ssh_cmd),
+                 "ssh -p %s"
+                 " -o StrictHostKeyChecking=accept-new"
+                 " -o 'UserKnownHostsFile=%s'"
+                 " -o ConnectTimeout=10"
+                 " -o BatchMode=yes"
+                 " -o LogLevel=ERROR",
+                 port_str, known_hosts);
+    }
+
+    /* sshpass(1) -e(1) rsync(1) -az(1) --partial(1) -e(2) src(1) dest(1) NULL = ~10 */
+    char *argv[16];
+    int i = 0;
+
+    if (!use_key) {
+        setenv("SSHPASS", cfg.sftp_pass, 1);
+        argv[i++] = (char *)"sshpass";
+        argv[i++] = (char *)"-e";
+    }
+
+    argv[i++] = (char *)"rsync";
+    argv[i++] = (char *)"-az";        /* archive mode + compress */
+    argv[i++] = (char *)"--partial";  /* keep partial file; resume on retry */
+    argv[i++] = (char *)"-e"; argv[i++] = ssh_cmd;
+    argv[i++] = (char *)remote_src;
+    argv[i++] = (char *)local_dest;
+    argv[i]   = NULL;
+
+    execvp(argv[0], argv);
+    _exit(1);
 }
 
 /* ─── cover art scraping (TheGamesDB) ───────────────────────────────────── */
@@ -639,7 +687,7 @@ static int scan_remote_system(const char *system, const char *csv_path,
         close(pipefd[1]);
 
         char *extras[] = { ls_cmd, NULL };
-        exec_ssh_child(false, port_str, known_hosts, host_str, extras);
+        exec_ssh_child(port_str, known_hosts, host_str, extras);
         /* exec_ssh_child never returns */
     }
     if (pid < 0) { close(pipefd[0]); close(pipefd[1]); return -1; }
@@ -834,7 +882,9 @@ bool launcher_start_download(const LauncherGame *game, const char *base_dir)
         return false;
     }
 
-    /* Secure file download via scp (SSH encrypted transport) */
+    /* Secure file download via rsync over SSH.
+       --partial keeps the .part file if interrupted so the next attempt resumes
+       rather than restarting from scratch. */
     char part_path[608];
     snprintf(part_path, sizeof(part_path), "%s.part", local_path);
 
@@ -846,18 +896,12 @@ bool launcher_start_download(const LauncherGame *game, const char *base_dir)
         char known_hosts[600];
         get_known_hosts_path(known_hosts, sizeof(known_hosts));
 
-        /* Build "user@host:remote_path" in a local buffer — avoids the
-           undefined behaviour of passing a temporary std::string's .c_str()
-           to execvp (the temporary would be destroyed before exec uses it). */
         char remote_src[1024];
         snprintf(remote_src, sizeof(remote_src), "%s@%s:%s",
                  cfg.sftp_user, cfg.sftp_host, game->path);
 
-        /* For scp, host+path and dest are passed as extra_argv; host_str
-           parameter is unused (scp embeds the host in remote_src).       */
-        char *extras[] = { remote_src, part_path, NULL };
-        exec_ssh_child(true, port_str, known_hosts, NULL, extras);
-        /* exec_ssh_child never returns */
+        exec_rsync_child(port_str, known_hosts, remote_src, part_path);
+        /* exec_rsync_child never returns */
     }
     return g_download_pid > 0;
 }

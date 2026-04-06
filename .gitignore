@@ -37,3 +37,6 @@ MiSTer
 
 # ignore preview/build artifacts
 preview/
+
+# local planning/notes
+OPTIMIZATION_PLAN.md
