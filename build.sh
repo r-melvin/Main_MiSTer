@@ -14,16 +14,21 @@ set -o pipefail
 echo "Start building..."
 make
 
+# Deploy via SCP with SSH key (SFTP with encryption)
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+KEY="$SCRIPT_DIR/mister_deploy_key"
+
 set +e
-echo y|plink root@$HOST -pw 1 'killall MiSTer'
+# Kill existing process
+ssh -i "$KEY" -o ConnectTimeout=5 root@$HOST 'killall MiSTer' 2>/dev/null || true
 
 set -e
-ftp -n <<EOF
-open $HOST
-user root 1
-passive
-binary
-put $BUILDDIR/MiSTer /media/fat/MiSTer
-EOF
+# Deploy binary via encrypted SCP
+scp -i "$KEY" "$BUILDDIR/MiSTer" root@$HOST:/media/fat/MiSTer
 
-plink root@$HOST -pw 1 -batch 'sync;PATH=/media/fat:$PATH;MiSTer >/dev/ttyS0 2>/dev/ttyS0 </dev/null &'
+# Restart
+ssh -i "$KEY" root@$HOST 'sync; PATH=/media/fat:$PATH; MiSTer >/dev/ttyS0 2>/dev/ttyS0 </dev/null &'
+
+echo "If SSH key doesn't exist, generate it:"
+echo "ssh-keygen -t ed25519 -f mister_deploy_key"
+echo "ssh-copy-id -i mister_deploy_key root@$HOST"

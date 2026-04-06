@@ -261,6 +261,7 @@ void user_io_store_filename(char *filename);
 int user_io_use_cheats();
 
 int process_ss(const char *rom_name, int enable = 1);
+int process_ss_load_slot(int slot); /* load slot 0-3 from disk into FPGA shared memory */
 
 char is_f12_mod_needed();
 void diskled_on();

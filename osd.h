@@ -25,6 +25,8 @@ void InfoEnable(int x, int y, int width, int height);
 void OsdRotation(uint8_t rotate);
 void OsdDisable();
 void OsdMenuCtl(int en);
+void OsdPause(int pause);
+int OsdIsPaused();
 void OsdUpdate();
 void OSD_PrintInfo(const char *message, int *width, int *height, int frame = 0);
 void OsdDrawLogo(int row);

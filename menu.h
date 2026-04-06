@@ -7,6 +7,8 @@ void SelectFile(const char* path, const char* pFileExt, int Options, unsigned ch
 
 void HandleUI(void);
 void menu_key_set(unsigned int c);
+uint32_t menu_key_get(void);
+uint8_t  menu_ascii_key(uint32_t keycode);
 void menu_process_save();
 void PrintDirectory(int expand = 0);
 void ScrollLongName(void);

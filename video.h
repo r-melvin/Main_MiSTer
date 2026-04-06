@@ -74,4 +74,8 @@ void video_core_description(char *str, size_t len);
 void video_scaler_description(char *str, size_t len);
 char* video_get_core_mode_name(int with_vrefresh = 1);
 
+/* launcher framebuffer access */
+volatile uint32_t *video_get_fb_ptr(int page);
+void               video_get_fb_dims(int *w, int *h);
+
 #endif // VIDEO_H

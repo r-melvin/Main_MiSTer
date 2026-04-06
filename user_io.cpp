@@ -651,6 +651,12 @@ int user_io_get_joy_transl()
 static int use_cheats = 0;
 static uint32_t ss_base = 0;
 static uint32_t ss_size = 0;
+
+/* ── save-state shared state (file-scope so process_ss_load_slot can access) */
+static char     ss_name[1024] = {};
+static char    *ss_sufx       = NULL;
+static uint32_t ss_cnt[4]     = {};
+static void    *ss_base_ptr[4]= {};
 static uint32_t uart_speeds[13] = {};
 static char uart_speed_labels[13][32] = {};
 static uint32_t midi_speeds[13] = {};
@@ -1884,11 +1890,9 @@ static void kbd_fifo_poll()
 
 int process_ss(const char *rom_name, int enable)
 {
-	static char ss_name[1024] = {};
-	static char *ss_sufx = 0;
-	static uint32_t ss_cnt[4] = {};
-	static void *base[4] = {};
 	static int enabled = 0;
+	/* ss_name, ss_sufx, ss_cnt, ss_base_ptr are now file-scope */
+	void **base = ss_base_ptr;
 
 	if (!ss_base) return 0;
 
@@ -1987,6 +1991,40 @@ int process_ss(const char *rom_name, int enable)
 		}
 	}
 
+	return 1;
+}
+
+/* Load save-state slot (0-3) from disk into FPGA shared memory.
+ * Replicates what process_ss() does on startup for a single slot so the
+ * FPGA core picks up the state at runtime.  Returns 1 on success, 0 if
+ * the slot has no save file or shared memory is not mapped. */
+int process_ss_load_slot(int slot)
+{
+	if (slot < 0 || slot > 3) return 0;
+	if (!ss_base_ptr[slot] || !ss_sufx) return 0;
+
+	/* build path for the requested slot */
+	char path[1024];
+	strncpy(path, ss_name, sizeof(path) - 1);
+	path[sizeof(path) - 1] = '\0';
+	char *sufx = path + (ss_sufx - ss_name);
+	*sufx = (char)('1' + slot);
+
+	if (!FileExists(path)) return 0;
+
+	fileTYPE f = {};
+	if (!FileOpen(&f, path)) return 0;
+
+	int ret = FileReadAdv(&f, ss_base_ptr[slot], ss_size);
+	FileClose(&f);
+	if (ret <= 0) return 0;
+
+	/* mark slot as freshly loaded: sentinel signals FPGA to load the state,
+	 * and reset our counter so the next poll does not immediately re-save it */
+	*(uint32_t *)(ss_base_ptr[slot]) = 0xFFFFFFFF;
+	ss_cnt[slot] = 0xFFFFFFFF;
+
+	printf("process_ss_load_slot: loaded %d bytes from %s\n", ret, path);
 	return 1;
 }
 
@@ -3071,10 +3109,14 @@ void user_io_poll()
 		PROFILE_FUNCTION();
 	#endif
 
-	// every frame, check if a screenshot has been requested.
-	// this is reduce risk of screenshot occurring while the scaler
-	// is being updated and getting a corrupted image.
-	add_frame_callback(screenshot_cb);
+	static bool screenshot_callback_registered = false;
+	if (!screenshot_callback_registered)
+	{
+		// Register once so the callback still runs every frame without
+		// paying the duplicate-check cost in the polling loop.
+		add_frame_callback(screenshot_cb);
+		screenshot_callback_registered = true;
+	}
 	
 	if ((core_type != CORE_TYPE_SHARPMZ) &&
 		(core_type != CORE_TYPE_8BIT))

@@ -35,9 +35,14 @@
 #include "str_util.h"
 #include "frame_timer.h"
 #include "scaler.h"
+#include "launcher.h"
 
 #define NUMDEV 30
 #define UINPUT_NAME "MiSTer virtual input"
+
+/* Set to 1 by input_cb when Select+Start are held simultaneously.
+ * Cleared by HandleUI() when transitioning to MENU_LAUNCHER_IGM1. */
+volatile int launcher_igm_chord = 0;
 
 bool update_advanced_state(int devnum, uint16_t evcode, int evstate);
 
@@ -2649,6 +2654,28 @@ static void input_cb(struct input_event *ev, struct input_absinfo *absinfo, int 
 				mouse_btn_req();
 			}
 			return;
+		}
+	}
+
+	/* launcher in-game menu chord: Select+Start simultaneously held */
+	if (ev->type == EV_KEY && input[dev].has_mmap && ev->value >= 0 && ev->value <= 1)
+	{
+		static uint32_t chord_held[NUMDEV] = {};
+		if (ev->code && ev->code == input[dev].mmap[SYS_BTN_SELECT])
+		{
+			if (ev->value) chord_held[dev] |=  (1u << SYS_BTN_SELECT);
+			else           chord_held[dev] &= ~(1u << SYS_BTN_SELECT);
+		}
+		if (ev->code && ev->code == input[dev].mmap[SYS_BTN_START])
+		{
+			if (ev->value) chord_held[dev] |=  (1u << SYS_BTN_START);
+			else           chord_held[dev] &= ~(1u << SYS_BTN_START);
+		}
+		if (ev->value == 1 &&
+		    (chord_held[dev] & ((1u << SYS_BTN_SELECT) | (1u << SYS_BTN_START))) ==
+		    ((1u << SYS_BTN_SELECT) | (1u << SYS_BTN_START)))
+		{
+			launcher_igm_chord = 1;
 		}
 	}
 
@@ -5901,6 +5928,17 @@ int input_test(int getchar)
 						else if (!strcmp(cmd + 7, "unmute")) set_volume(0x80);
 						else if (cmd[7] >= '0' && cmd[7] <= '7') set_volume(0x40 - 0x30 + cmd[7]);
 					}
+					else if (!strncmp(cmd, "pause_core", 10))
+					{
+						char *arg = cmd + 10;
+						while (*arg == ' ' || *arg == '\t') arg++;
+						int pause;
+						if (*arg == '1')      pause = 1;
+						else if (*arg == '0') pause = 0;
+						else                  pause = !OsdIsPaused();  // toggle
+						OsdPause(pause);
+						printf("MiSTer: core %s\n", pause ? "paused" : "resumed");
+					}
 				}
 			}
 
@@ -5956,6 +5994,8 @@ void key_update_frames_held_cb(void)
 	}
 }
 
+static bool s_key_frames_callback_registered = false;
+
 int input_poll(int getchar)
 {
 	#ifdef PROFILING
@@ -5966,7 +6006,11 @@ int input_poll(int getchar)
  	if (!autofire_cfg_parsed) autofire_cfg_parsed = parse_autofire_cfg();
 	static uint32_t joy_mask_prev[NUMPLAYERS] = {};
 
-	add_frame_callback(key_update_frames_held_cb);
+	if (!s_key_frames_callback_registered)
+	{
+		add_frame_callback(key_update_frames_held_cb);
+		s_key_frames_callback_registered = true;
+	}
 
 
 	int ret = input_test(getchar);

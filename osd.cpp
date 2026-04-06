@@ -246,6 +246,7 @@ static void draw_title(const unsigned char *p)
 // write a null-terminated string <s> to the OSD buffer starting at line <n>
 void OsdWriteOffset(unsigned char n, const char *s, unsigned char invert, unsigned char stipple, char offset, char leftchar, char usebg, int maxinv, int mininv)
 {
+	SPIKE_FUNCTION(2000);
 	//printf("OsdWriteOffset(%d)\n", n);
 	unsigned short i;
 	unsigned char b;
@@ -547,6 +548,26 @@ void OsdMenuCtl(int en)
 	}
 }
 
+// Pause/resume the FPGA core without opening the full OSD menu.
+// Sends only the bare OSD enable/disable SPI command — no cursor positioning,
+// no keyboard re-routing, no menu state changes.  The FPGA core sees
+// osd_active go high and freezes game logic (for cores that implement it).
+static int osd_paused = 0;
+
+void OsdPause(int pause)
+{
+	osd_paused = pause;
+	if (pause)
+		spi_osd_cmd(OSD_CMD_ENABLE);
+	else
+		spi_osd_cmd(OSD_CMD_DISABLE);
+}
+
+int OsdIsPaused()
+{
+	return osd_paused;
+}
+
 // write a null-terminated string <s> to the OSD buffer starting at line <n>
 static void print_line(unsigned char line, const char *hdr, const char *text, unsigned long width, unsigned long offset, unsigned char invert)
 {
@@ -596,6 +617,7 @@ static void print_line(unsigned char line, const char *hdr, const char *text, un
 
 void ScrollText(char n, const char *str, int off, int len, int max_len, unsigned char invert, int idx)
 {
+	SPIKE_FUNCTION(1000);
 	// this function is called periodically when a string longer than the window is displayed.
 
 #define BLANKSPACE 10 // number of spaces between the end and start of repeated name
@@ -662,14 +684,14 @@ char* OsdCoreNameGet()
 
 void OsdUpdate()
 {
-	PROFILE_FUNCTION();
+	SPIKE_FUNCTION(5000);
 	int n = is_menu() ? 19 : osd_size;
 	for (int i = 0; i < n; i++)
 	{
 		if (osdset & (1 << i))
 		{
 			spi_osd_cmd_cont(OSD_CMD_WRITE | i);
-			spi_write(osdbuf + i * 256, 256, 0);
+			spi_block_write(osdbuf + i * 256, 0, 256);
 			DisableOsd();
 			if (is_megacd()) mcd_poll();
 			if (is_pce()) pcecd_poll();

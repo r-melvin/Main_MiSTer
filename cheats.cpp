@@ -592,3 +592,42 @@ int cheats_loaded()
 {
 	return loaded;
 }
+
+const char *cheats_get_name(int idx)
+{
+	if (idx < 0 || idx >= (int)cheats.size()) return "";
+	/* strip .gg extension for display, matching cheats_print() behaviour */
+	static char buf[256];
+	strncpy(buf, cheats[idx].name, sizeof(buf) - 1);
+	buf[sizeof(buf) - 1] = '\0';
+	int len = (int)strlen(buf);
+	if (len > 3 && strncasecmp(buf + len - 3, ".gg", 3) == 0)
+		buf[len - 3] = '\0';
+	return buf;
+}
+
+int cheats_is_enabled(int idx)
+{
+	if (idx < 0 || idx >= (int)cheats.size()) return 0;
+	return cheats[idx].enabled ? 1 : 0;
+}
+
+int cheats_get_selected(void)
+{
+	return iSelectedEntry;
+}
+
+void cheats_set_selected(int idx)
+{
+	int n = (int)cheats.size();
+	if (n <= 0) return;
+	if (idx < 0) idx = 0;
+	if (idx >= n) idx = n - 1;
+	iSelectedEntry = idx;
+	/* keep iFirstEntry consistent with cheats_scan logic */
+	if (iSelectedEntry < iFirstEntry)
+		iFirstEntry = iSelectedEntry;
+	else if (iSelectedEntry >= iFirstEntry + OsdGetSize())
+		iFirstEntry = iSelectedEntry - OsdGetSize() + 1;
+	if (iFirstEntry < 0) iFirstEntry = 0;
+}

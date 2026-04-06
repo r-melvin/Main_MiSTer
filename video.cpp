@@ -3244,6 +3244,17 @@ int video_fb_state()
 	return fb_enabled;
 }
 
+volatile uint32_t *video_get_fb_ptr(int page)
+{
+	if (!fb_base) return nullptr;
+	return fb_base + (FB_SIZE * page);
+}
+
+void video_get_fb_dims(int *w, int *h)
+{
+	if (w) *w = fb_width;
+	if (h) *h = fb_height;
+}
 
 static void video_fb_config()
 {

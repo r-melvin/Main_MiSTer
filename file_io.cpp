@@ -192,8 +192,10 @@ static int isPathDirectory(const char *path, int use_zip = 1)
 
 		if (!OpenZipfileCached(full_path, 0))
 		{
+#ifdef DEBUG
 			printf("isPathDirectory(OpenZipfileCached) Zip:%s, error:%s\n", zip_path,
 				mz_zip_get_error_string(mz_zip_get_last_error(&last_zip_archive)));
+#endif
 			return 0;
 		}
 
@@ -455,7 +457,7 @@ int FileOpenEx(fileTYPE *file, const char *name, int mode, char mute, int use_zi
 	}
 	else
 	{
-		int fd = (mode == -1) ? shm_open("/vdsk", O_CREAT | O_RDWR | O_TRUNC | O_CLOEXEC, 0777) : open(full_path, mode | O_CLOEXEC, 0777);
+		int fd = (mode == -1) ? shm_open("/vdsk", O_CREAT | O_RDWR | O_TRUNC | O_CLOEXEC, S_IRUSR | S_IWUSR) : open(full_path, mode | O_CLOEXEC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 		if (fd <= 0)
 		{
 			if(!mute) printf("FileOpenEx(open) File:%s, error: %s.\n", full_path, strerror(errno));
@@ -480,6 +482,11 @@ int FileOpenEx(fileTYPE *file, const char *name, int mode, char mute, int use_zi
 			if(!mute) printf("FileOpenEx(fdopen) File:%s, error: %s.\n", full_path, strerror(errno));
 			close(fd);
 			return 0;
+		}
+
+		if ((mode & O_ACCMODE) != O_RDONLY)
+		{
+			setvbuf(file->filp, NULL, (mode & O_SYNC) ? _IONBF : _IOFBF, BUFSIZ);
 		}
 
 		if (mode == -1)
@@ -668,7 +675,6 @@ int FileWriteAdv(fileTYPE *file, void *pBuffer, int length, int failres)
 	if (file->filp)
 	{
 		ret = fwrite(pBuffer, 1, length, file->filp);
-		fflush(file->filp);
 
 		if (ret < 0)
 		{
@@ -701,10 +707,12 @@ int FileSave(const char *name, void *pBuffer, int size)
 {
 	make_fullpath(name);
 
-	int fd = open(full_path, O_WRONLY | O_CREAT | O_TRUNC | O_SYNC, S_IRWXU | S_IRWXG | S_IRWXO);
+	int fd = open(full_path, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 	if (fd < 0)
 	{
+#ifdef DEBUG
 		printf("FileSave(open) File:%s, error: %d.\n", full_path, fd);
+#endif
 		return 0;
 	}
 
@@ -829,10 +837,10 @@ int FileCanWrite(const char *name)
 void create_path(const char *base_dir, const char* sub_dir)
 {
 	make_fullpath(base_dir);
-	mkdir(full_path, S_IRWXU | S_IRWXG | S_IRWXO);
+	mkdir(full_path, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
 	strcat(full_path, "/");
 	strcat(full_path, sub_dir);
-	mkdir(full_path, S_IRWXU | S_IRWXG | S_IRWXO);
+	mkdir(full_path, S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
 }
 
 int FileCreatePath(const char *dir)

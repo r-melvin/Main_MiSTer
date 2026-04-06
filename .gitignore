@@ -29,3 +29,11 @@ host
 .vs
 MiSTer
 /bin
+
+# ignore IDE and development tool files
+.idea/
+.vscode/
+.claude/
+
+# ignore preview/build artifacts
+preview/

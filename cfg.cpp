@@ -138,6 +138,19 @@ static const ini_var_t ini_vars[] =
 	{ "AUTOFIRE_ON_DIRECTIONS", (void *)(&(cfg.autofire_on_directions)), UINT8, 0, 1 },
 	{ "SCREENSHOT_IMAGE_FORMAT", (void *)(&(cfg.screenshot_image_format)), STRING, 0, sizeof(cfg.screenshot_image_format) - 1 },
 
+	/* launcher */
+	{ "LAUNCHER",      (void*)(&(cfg.launcher)),      UINT8,  0, 1 },
+	{ "LAUNCHER_PATH", (void*)(cfg.launcher_path),     STRING, 0, sizeof(cfg.launcher_path) - 1 },
+	{ "SFTP_HOST",     (void*)(cfg.sftp_host),         STRING, 0, sizeof(cfg.sftp_host) - 1 },
+	{ "SFTP_USER",     (void*)(cfg.sftp_user),         STRING, 0, sizeof(cfg.sftp_user) - 1 },
+	{ "SFTP_PASS",     (void*)(cfg.sftp_pass),         STRING, 0, sizeof(cfg.sftp_pass) - 1 },
+	{ "SFTP_PORT",     (void*)(&(cfg.sftp_port)),      UINT16, 0, 65535 },
+	{ "SFTP_BASE_PATH",(void*)(cfg.sftp_base_path),   STRING, 0, sizeof(cfg.sftp_base_path) - 1 },
+	{ "SFTP_KEY_PATH", (void*)(cfg.sftp_key_path),    STRING, 0, sizeof(cfg.sftp_key_path)  - 1 },
+	{ "TGDB_API_KEY",       (void*)(cfg.tgdb_api_key),          STRING, 0, sizeof(cfg.tgdb_api_key)        - 1 },
+	{ "LAUNCHER_PARTICLES", (void*)(&(cfg.launcher_particles)), UINT8,  0, 1 },
+	{ "LAUNCHER_THEME",     (void*)(cfg.launcher_theme),       STRING, 0, sizeof(cfg.launcher_theme) - 1 },
+
 };
 
 static const int nvars = (int)(sizeof(ini_vars) / sizeof(ini_var_t));
@@ -602,7 +615,12 @@ void cfg_parse()
 	cfg_error_count = 0;
 	strcpy(cfg.autofire_rates, "10,15,30");
 	strcpy(cfg.screenshot_image_format, "png");
-	
+	cfg.launcher = 1;
+	strcpy(cfg.launcher_path, "/media/fat/remote_ui");
+	cfg.launcher_particles = 1;
+	cfg.sftp_port = 22;
+	strcpy(cfg.sftp_base_path, "/games");
+
 	ini_parse(altcfg(), video_get_core_mode_name(1));
 	if (has_video_sections && !using_video_section)
 	{

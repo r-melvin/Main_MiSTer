@@ -66,6 +66,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "profiling.h"
 #include "str_util.h"
 #include "autofire.h"
+#include "launcher.h"
+#include "launcher_io.h"
 
 /*menu states*/
 enum MENU
@@ -217,6 +219,12 @@ enum MENU
 	// Atari 8bit cartridge type selection
 	MENU_ATARI8BIT_CART1,
 	MENU_ATARI8BIT_CART2,
+
+	// MiSTer launcher
+	MENU_LAUNCHER1,
+	MENU_LAUNCHER2,
+	MENU_LAUNCHER_IGM1,
+	MENU_LAUNCHER_IGM2,
 };
 
 static uint32_t menustate = MENU_NONE1;
@@ -484,6 +492,12 @@ static uint8_t GetASCIIKey(uint32_t keycode)
 	return keycode_table[get_amiga_code(keycode & 0xFFFF) & 0x7F];
 }
 
+/* exported for launcher type-to-search */
+uint8_t menu_ascii_key(uint32_t keycode)
+{
+	return GetASCIIKey(keycode);
+}
+
 static bool ignore_osd_release = false;
 static int select_ini = 0;
 
@@ -535,7 +549,7 @@ void menu_key_set(unsigned int c)
 
 // get key status
 static int hold_cnt = 0;
-static uint32_t menu_key_get(void)
+uint32_t menu_key_get(void)
 {
 	static uint32_t prev_key = 0;
 	static unsigned long db_time = 0;
@@ -1068,7 +1082,7 @@ void build_advanced_map_summary(advancedButtonMap *abm, char *dest_str, size_t d
 
 void HandleUI(void)
 {
-	PROFILE_FUNCTION();
+	SPIKE_FUNCTION(16000);
 
 	if (bt_timer >= 0)
 	{
@@ -1426,43 +1440,46 @@ void HandleUI(void)
 	// The screen should set menumask, bit 0 to make the top line selectable, bit 1 for the 2nd line, etc.
 	// (Lines in this context don't have to correspond to rows on the OSD.)
 	// Also set parentstate to the appropriate menustate.
-	if (menumask)
 	{
-		if (down)
+		SPIKE_SCOPE("osd_nav_redraw", 8000);
+		if (menumask)
 		{
-			if((menumask >= ((uint64_t)1 << (menusub + 1))))	// Any active entries left?
+			if (down)
 			{
-				do
+				if((menumask >= ((uint64_t)1 << (menusub + 1))))	// Any active entries left?
 				{
-					menusub++;
-				} while ((menumask & ((uint64_t)1 << menusub)) == 0);
-			} else {
-				menusub = 0; // jump to first item
-				while ((menumask & ((uint64_t)1 << menusub )) == 0) menusub++;
-			}
-
-			menustate = parentstate;
-		}
-
-		if (up)
-		{
-			if (menusub > 0)
-			{
-				do
-				{
-					--menusub;
-				} while (menusub != 0 && (menumask & ((uint64_t)1 << menusub)) == 0);
-				if (menusub == 0 && (menumask & 1) == 0) { //If the first menu entry is disabled...
-					while ((menumask & ((uint64_t)(~0) << (menusub + 1))) != 0) menusub++;
-					//Go to to last item
+					do
+					{
+						menusub++;
+					} while ((menumask & ((uint64_t)1 << menusub)) == 0);
+				} else {
+					menusub = 0; // jump to first item
+					while ((menumask & ((uint64_t)1 << menusub )) == 0) menusub++;
 				}
-			} else {
-				do
-				{
-					menusub++;
-				} while ((menumask & ((uint64_t)(~0) << (menusub + 1))) != 0); // jump to last item
+
+				menustate = parentstate;
 			}
-			menustate = parentstate;
+
+			if (up)
+			{
+				if (menusub > 0)
+				{
+					do
+					{
+						--menusub;
+					} while (menusub != 0 && (menumask & ((uint64_t)1 << menusub)) == 0);
+					if (menusub == 0 && (menumask & 1) == 0) { //If the first menu entry is disabled...
+						while ((menumask & ((uint64_t)(~0) << (menusub + 1))) != 0) menusub++;
+						//Go to to last item
+					}
+				} else {
+					do
+					{
+						menusub++;
+					} while ((menumask & ((uint64_t)(~0) << (menusub + 1))) != 0); // jump to last item
+				}
+				menustate = parentstate;
+			}
 		}
 	}
 
@@ -1493,6 +1510,10 @@ void HandleUI(void)
 	case MENU_NONE1:
 	case MENU_NONE2:
 	case MENU_INFO:
+	case MENU_LAUNCHER1:
+	case MENU_LAUNCHER2:
+	case MENU_LAUNCHER_IGM1:
+	case MENU_LAUNCHER_IGM2:
 		break;
 
 	default:
@@ -1535,6 +1556,8 @@ void HandleUI(void)
 		firstmenu = 0;
 		vga_nag();
 		OsdSetSize(8);
+		if (is_menu() && cfg.launcher)
+			menustate = MENU_LAUNCHER1;
 		break;
 
 	case MENU_INFO:
@@ -1542,6 +1565,12 @@ void HandleUI(void)
 		// fall through
 
 	case MENU_NONE2:
+		if (launcher_igm_chord)
+		{
+			launcher_igm_chord = 0;
+			menustate = MENU_LAUNCHER_IGM1;
+			break;
+		}
 		if (menu && !osd_unlocked)
 		{
 			menustate = MENU_UNLOCK1;
@@ -1593,6 +1622,26 @@ void HandleUI(void)
 			else OsdEnable(DISABLE_KEYBOARD);
 			if (mgl->state == 1) mgl->state = 2;
 		}
+		break;
+
+	case MENU_LAUNCHER1:
+		launcher_init();
+		menustate = MENU_LAUNCHER2;
+		break;
+
+	case MENU_LAUNCHER2:
+		if (!launcher_tick())
+			menustate = MENU_SYSTEM1;
+		break;
+
+	case MENU_LAUNCHER_IGM1:
+		launcher_igm_begin();
+		menustate = MENU_LAUNCHER_IGM2;
+		break;
+
+	case MENU_LAUNCHER_IGM2:
+		if (!launcher_igm_tick())
+			menustate = MENU_NONE1;
 		break;
 
 	case MENU_SELECT_INI1:
@@ -2321,7 +2370,7 @@ void HandleUI(void)
 						if (p[idx] >= '0' && p[idx] <= '9') ioctl_index = p[idx] - '0';
 						substrcpy(ext, p, 1);
 						if (is_gba() && FileExists(user_io_make_filepath(HomeDir(), "goomba.rom"))) strcat(ext, "GB GBC");
-						while (strlen(ext) % 3) strcat(ext, " ");
+						{ size_t el = strlen(ext); size_t ep = (3 - el % 3) % 3; if (ep) { memset(ext + el, ' ', ep); ext[el + ep] = '\0'; } }
 
 						fs_Options = SCANO_DIR | (is_neogeo() ? SCANO_NEOGEO | SCANO_NOENTER : 0) | (store_name ? SCANO_CLEAR : 0) | (is_atari5200() || (is_atari800() && (ioctl_index == 8 || ioctl_index == 9)) ? SCANO_UMOUNT : 0);
 						fs_MenuSelect = MENU_GENERIC_FILE_SELECTED;
@@ -2357,7 +2406,7 @@ void HandleUI(void)
 						ioctl_index = 0;
 						if ((p[idx] >= '0' && p[idx] <= '9') || is_x86() || is_pcxt()) ioctl_index = p[idx] - '0';
 						substrcpy(ext, p, 1);
-						while (strlen(ext) % 3) strcat(ext, " ");
+						{ size_t el = strlen(ext); size_t ep = (3 - el % 3) % 3; if (ep) { memset(ext + el, ' ', ep); ext[el + ep] = '\0'; } }
 
 						fs_Options = SCANO_DIR | SCANO_UMOUNT;
 						fs_MenuSelect = MENU_GENERIC_IMAGE_SELECTED;
@@ -2806,7 +2855,7 @@ void HandleUI(void)
 					if (strlen(audio_get_filter(1))) strncpy(s + 1, audio_get_filter(1), 25);
 					else strcpy(s, " < none >");
 
-					while (strlen(s) < 26) strcat(s, " ");
+					{ size_t sl = strlen(s); if (sl < 26) { memset(s + sl, ' ', 26 - sl); s[26] = '\0'; } }
 					strcat(s, " \x16 ");
 
 					MenuWrite(n++, s, menusub == 10, !audio_filter_en() || !S_ISDIR(getFileType(AFILTER_DIR)));

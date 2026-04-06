@@ -106,6 +106,19 @@ typedef struct {
 	uint8_t autofire_on_directions;
 	char screenshot_image_format[16];
 
+	/* launcher */
+	uint8_t  launcher;
+	char     launcher_path[1024];
+	char     sftp_host[256];
+	char     sftp_user[256];
+	char     sftp_pass[256];
+	uint16_t sftp_port;
+	char     sftp_base_path[512]; /* root dir on remote server, e.g. /games */
+	char     sftp_key_path[512];  /* path to SSH private key; preferred over password */
+	char     tgdb_api_key[128];   /* TheGamesDB API key for cover art scraping */
+	uint8_t  launcher_particles;  /* 0 = disable particle system (saves ~2 ms/frame) */
+	char     launcher_theme[64];  /* theme name (subdir of {launcher_path}/themes/) */
+
 } cfg_t;
 
 extern cfg_t cfg;
