@@ -1,0 +1,67 @@
+; launcher.cfg.example
+; Copy the relevant lines into /media/fat/MiSTer.ini under the [MiSTer] section.
+; All launcher settings are optional unless noted.
+
+[MiSTer]
+
+; ── Core launcher ─────────────────────────────────────────────────────────────
+
+; Enable the game launcher UI (default: 1)
+LAUNCHER=1
+
+; Directory on the SD card used for launcher data: cache, covers, themes, state.
+; Created automatically if it does not exist. (default: /media/fat/remote_ui)
+LAUNCHER_PATH=/media/fat/launcher
+
+; Enable particle background animation. Set to 0 to save ~2 ms/frame. (default: 1)
+LAUNCHER_PARTICLES=1
+
+; Theme to use. Must match a subdirectory name inside {LAUNCHER_PATH}/themes/.
+; Built-in options: dark  light  purple  retro  (default: dark)
+LAUNCHER_THEME=dark
+
+
+; ── Remote ROM server ─────────────────────────────────────────────────────────
+;
+; The launcher connects to a remote SSH server to list and download ROMs.
+; It uses rsync over SSH — downloads are resumable and the launcher NEVER
+; writes, modifies, or deletes files on the remote server.
+;
+; Supported systems (subdirectories under SFTP_BASE_PATH):
+;   SNES, NES, GBA, GB, GBC, Genesis, MegaDrive, Sega32X, MasterSystem,
+;   GameGear, PCEngine, TurboGrafx16, NeoGeo, Arcade, Atari2600, Atari7800,
+;   AtariLynx, ColecoVision, Intellivision, PSX, N64, C64, AmigaOCS
+;
+; Server-side setup: see README.md → "Remote ROM Library" for instructions on
+; creating a read-only SSH user so the MiSTer cannot alter the remote filesystem.
+
+; Hostname or IP address of the remote server. (required to enable remote mode)
+SFTP_HOST=192.168.1.100
+
+; SSH username on the remote server. (required)
+SFTP_USER=mister-roms
+
+; SSH port. (default: 22)
+SFTP_PORT=22
+
+; Root directory on the remote server containing system subdirectories. (default: /games)
+SFTP_BASE_PATH=/path/to/games
+
+; Path to an SSH private key on the SD card. Preferred over password auth —
+; never stored in plain text and not visible in process listings.
+; Generate with: ssh-keygen -t ed25519 -f mister_roms_key -N ""
+SFTP_KEY_PATH=/media/fat/launcher/mister_roms_key
+
+; Password auth fallback. Only use if key auth is not possible.
+; WARNING: stored in plain text in MiSTer.ini. Prefer SFTP_KEY_PATH.
+; SFTP_PASS=yourpassword
+
+
+; ── Cover art (TheGamesDB) ────────────────────────────────────────────────────
+;
+; If set, the launcher scrapes box art from TheGamesDB and caches it locally.
+; Covers are fetched lazily (on first view) and stored in {LAUNCHER_PATH}/covers/.
+; Leave blank to disable cover scraping. (default: disabled)
+;
+; Get a free API key at: https://www.thegamesdb.net/
+; TGDB_API_KEY=your_api_key_here
