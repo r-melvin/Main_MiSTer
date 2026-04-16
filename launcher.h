@@ -13,9 +13,7 @@ enum LauncherMode
     LMODE_GAMES,
     LMODE_LAUNCHING,
     LMODE_ERROR,
-    LMODE_COVER_DL,       /* cover batch download modal */
     LMODE_VERSION_SELECT, /* ROM version/region picker modal */
-    LMODE_DESCRIPTION,    /* game description overlay */
     LMODE_SLEEPING,       /* game running – fb disabled, waiting for chord */
     LMODE_IGM,            /* in-game menu overlay */
     LMODE_SETTINGS,       /* launcher settings menu */
@@ -61,7 +59,7 @@ enum IGMMode
 struct LauncherGame
 {
     char name[128];
-    char path[512];       /* remote SFTP or local absolute path */
+    char path[512];       /* local absolute path to the ROM */
     char cover_path[512]; /* local cover image absolute path */
     char system[64];
     uint32_t last_played; /* unix timestamp of last launch */
@@ -172,6 +170,11 @@ struct LauncherTheme {
     uint32_t overlay;   /* semi-transparent modal overlay */
     uint32_t err;       /* error text */
     uint32_t search;    /* search bar background */
+    uint32_t perf_on;       /* "on" indicator in settings */
+    uint32_t perf_off;      /* "off" indicator in settings */
+    uint32_t sel_ring;      /* bulk-select badge outer ring */
+    uint32_t sel_ring_inner;/* bulk-select badge inner fill */
+    uint32_t sel_check;     /* bulk-select badge tick mark */
     /* fonts — point sizes for FONT_TITLE / FONT_BIG / FONT_SM */
     int      font_sizes[3];
     /* optional background image (absolute path; empty string = solid colour) */
@@ -192,6 +195,11 @@ extern LauncherTheme g_theme;
 #define LC_OVERLAY (g_theme.overlay)
 #define LC_ERR     (g_theme.err)
 #define LC_SEARCH  (g_theme.search)
+#define LC_PERF_ON       (g_theme.perf_on)
+#define LC_PERF_OFF      (g_theme.perf_off)
+#define LC_SEL_RING      (g_theme.sel_ring)
+#define LC_SEL_RING_IN   (g_theme.sel_ring_inner)
+#define LC_SEL_CHECK     (g_theme.sel_check)
 #define LC_WHITE   0xFFFFFFFFu
 #define LC_BLACK   0xFF000000u
 
@@ -217,33 +225,18 @@ extern volatile int launcher_igm_chord;
 extern const CoreMapEntry launcher_core_map[];
 extern const int          launcher_core_map_count;
 
-/* ─── theme API ──────────────────────────────────────────────────────────── */
-void launcher_theme_init(const char *launcher_path, const char *theme_name);
-void launcher_theme_load(const char *path);  /* load a specific .cfg file */
-
 /* ─── sorting API ────────────────────────────────────────────────────────── */
 void launcher_sort_games(LauncherGame *games, int count, int sort_order);
 
-/* ─── cover worker public API (used by launcher.cpp) ─────────────────────── */
-void  launcher_cover_worker_start(void);
-void  launcher_cover_worker_stop(void);
-void  launcher_cover_request(const LauncherGame *game);
-/* returns scaled Imlib_Image or NULL; caller must NOT free it (cache owns it) */
-Imlib_Image launcher_cover_get(const char *path);
-Imlib_Image launcher_cover_get_ex(const char *path, uint32_t *fade_out); /* single lookup for both */
-int   launcher_cover_flush(int limit);  /* call once per frame; returns covers processed */
-uint32_t    launcher_cover_fade_alpha(const char *path); /* 0-255 */
-
-/* ─── description fetch public API ────────────────────────────────────────── */
-#define LAUNCHER_DESC_IDLE    0
-#define LAUNCHER_DESC_LOADING 1
-#define LAUNCHER_DESC_READY   2
-#define LAUNCHER_DESC_NODATA  3
-
-void        launcher_desc_request(const LauncherGame *game, const char *base_dir);
-int         launcher_desc_state(void);
-const char *launcher_desc_text(void);
-const char *launcher_desc_error(void);
+/* Wrap a carousel index by `delta` within [0, n). Returns `cur` unchanged
+   when n <= 0 (empty list). Unit-tested separately. */
+static inline int launcher_wrap_index(int cur, int delta, int n)
+{
+    if (n <= 0) return cur;
+    int v = (cur + delta) % n;
+    if (v < 0) v += n;
+    return v;
+}
 
 /* play time tracking API */
 void launcher_state_apply_play_time(LauncherState *st, const char *state_path);

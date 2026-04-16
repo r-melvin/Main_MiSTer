@@ -380,6 +380,7 @@ Imlib_Image launcher_make_placeholder(float pulse)
 
 void launcher_draw_performance(Imlib_Image img, const uint32_t *frame_times, int frame_count, int screen_w, int screen_h)
 {
+    (void)screen_h;
     /* Calculate average frame time and FPS from last 60 frames */
     uint32_t total_ms = 0;
     for (int i = 0; i < frame_count && i < 60; i++)
@@ -425,8 +426,6 @@ void launcher_draw_help(Imlib_Image img, int screen_w, int screen_h)
         "L1:          Search by name",
         "X/Y:         Toggle favourite",
         "Insert:      Bulk select mode",
-        "D:           Download covers",
-        "I:           Show description",
         "R:           Rate game (1–5 stars)",
         NULL
     };
@@ -604,13 +603,13 @@ void launcher_draw_settings(Imlib_Image img, int screen_w, int screen_h, int sel
         int val_x = screen_w - 140;
         if (i == 0) {
             const char *status = particles ? "✓ ON" : "✗ OFF";
-            uint32_t status_col = particles ? 0xFF00DD00u : 0xFFDD0000u;
+            uint32_t status_col = particles ? LC_PERF_ON : LC_PERF_OFF;
             launcher_draw_text(img, val_x, y + 6, status, FONT_BIG, status_col);
         } else if (i == 1) {
             launcher_draw_text(img, val_x, y + 6, theme ? theme : "default", FONT_BIG, LC_TEXT);
         } else if (i == 2) {
             const char *status = show_perf ? "✓ ON" : "✗ OFF";
-            uint32_t status_col = show_perf ? 0xFF00DD00u : 0xFFDD0000u;
+            uint32_t status_col = show_perf ? LC_PERF_ON : LC_PERF_OFF;
             launcher_draw_text(img, val_x, y + 6, status, FONT_BIG, status_col);
         }
 
@@ -621,69 +620,22 @@ void launcher_draw_settings(Imlib_Image img, int screen_w, int screen_h, int sel
         "Up/Down: Navigate   A: Toggle/Select   B: Back", FONT_SM, LC_DIM);
 }
 
-/* ─── cover batch download progress modal ────────────────────────────────── */
-
-void launcher_draw_cover_dl(Imlib_Image img, int sw, int sh, int done, int total)
-{
-    imlib_context_set_image(img);
-
-    /* overlay */
-    set_col(LC_OVERLAY);
-    imlib_image_fill_rectangle(0, 0, sw, sh);
-
-    int cx = sw / 2;
-    int cy = sh / 2;
-
-    /* title */
-    launcher_draw_text_centred(img, cx, cy - 80, "COVER DOWNLOAD", FONT_TITLE, LC_HI);
-
-    /* progress bar background (trough) */
-    int bar_w = 400, bar_h = 30;
-    int bar_x = cx - bar_w / 2;
-    int bar_y = cy - 20;
-    launcher_fill_rect_rounded(img, bar_x, bar_y, bar_w, bar_h, 6, LC_CARD);
-
-    /* filled portion */
-    if (total > 0) {
-        int filled_w = (int)(bar_w * done / total);
-        launcher_fill_rect_rounded(img, bar_x, bar_y, filled_w, bar_h, 6, LC_HI);
-    }
-
-    /* progress text with percentage */
-    char pbuf[64];
-    int remaining = total - done;
-    int percent = (total > 0) ? (done * 100 / total) : 0;
-
-    if (done >= total) {
-        snprintf(pbuf, sizeof(pbuf), "100%% — All %d covers ready!", done);
-        launcher_draw_text_centred(img, cx, cy + 30, pbuf, FONT_SM, LC_HI);
-        launcher_draw_text_centred(img, cx, cy + 65, "Downloads complete", FONT_SM, LC_DIM);
-    } else {
-        snprintf(pbuf, sizeof(pbuf), "%d%% (%d ready, %d remaining)", percent, done, remaining);
-        launcher_draw_text_centred(img, cx, cy + 30, pbuf, FONT_SM, LC_TEXT);
-        launcher_draw_text_centred(img, cx, cy + 65, "Downloading…", FONT_SM, LC_DIM);
-    }
-
-    launcher_draw_text_centred(img, cx, sh - 40,
-        "B/Esc: Back  (downloads continue in background)", FONT_SM, LC_DIM);
-}
-
 /* ─── bulk select badge ──────────────────────────────────────────────────── */
 
 void launcher_draw_sel_badge(Imlib_Image img, int x, int y)
 {
     imlib_context_set_image(img);
 
-    /* ring: teal circle */
     int radius = 12;
-    uint32_t ring_col = 0xFF00C8C8u;  /* teal */
+    const uint32_t ring_col  = LC_SEL_RING;
+    const uint32_t inner_col = LC_SEL_RING_IN;
+    const uint32_t check_col = LC_SEL_CHECK;
 
-    /* draw a simple filled circle (approximated with overlapping rects) */
-    set_col(ring_col);
     /* outer ring */
     for (int dy = -radius; dy <= radius; dy++) {
         for (int dx = -radius; dx <= radius; dx++) {
-            if (dx*dx + dy*dy <= radius*radius && dx*dx + dy*dy > (radius-2)*(radius-2)) {
+            int d2 = dx*dx + dy*dy;
+            if (d2 <= radius*radius && d2 > (radius-2)*(radius-2)) {
                 imlib_context_set_color((ring_col >> 16) & 0xFF, (ring_col >> 8) & 0xFF,
                                        ring_col & 0xFF, (ring_col >> 24) & 0xFF);
                 imlib_image_fill_rectangle(x + dx, y + dy, 1, 1);
@@ -692,28 +644,27 @@ void launcher_draw_sel_badge(Imlib_Image img, int x, int y)
     }
 
     /* inner filled circle */
-    set_col(0xFF00A8A8u);  /* slightly darker teal */
     for (int dy = -(radius-2); dy <= (radius-2); dy++) {
         for (int dx = -(radius-2); dx <= (radius-2); dx++) {
             if (dx*dx + dy*dy <= (radius-2)*(radius-2)) {
-                imlib_context_set_color((0xFF00A8A8u >> 16) & 0xFF, (0xFF00A8A8u >> 8) & 0xFF,
-                                       0xFF00A8A8u & 0xFF, (0xFF00A8A8u >> 24) & 0xFF);
+                imlib_context_set_color((inner_col >> 16) & 0xFF, (inner_col >> 8) & 0xFF,
+                                       inner_col & 0xFF, (inner_col >> 24) & 0xFF);
                 imlib_image_fill_rectangle(x + dx, y + dy, 1, 1);
             }
         }
     }
 
-    /* checkmark: white */
-    set_col(0xFFFFFFFFu);  /* white */
-    /* simple checkmark using two lines: \ and / */
-    /* top-left to bottom-middle */
+    /* checkmark */
+    uint8_t cr = (check_col >> 16) & 0xFF;
+    uint8_t cg = (check_col >> 8) & 0xFF;
+    uint8_t cb = check_col & 0xFF;
+    uint8_t ca = (check_col >> 24) & 0xFF;
     for (int i = -3; i <= 2; i++) {
-        imlib_context_set_color(255, 255, 255, 255);
+        imlib_context_set_color(cr, cg, cb, ca);
         imlib_image_fill_rectangle(x + i - 2, y + i, 1, 1);
     }
-    /* bottom-middle to top-right */
     for (int i = -2; i <= 3; i++) {
-        imlib_context_set_color(255, 255, 255, 255);
+        imlib_context_set_color(cr, cg, cb, ca);
         imlib_image_fill_rectangle(x + i + 2, y - i + 2, 1, 1);
     }
 }
@@ -802,188 +753,6 @@ void launcher_draw_version_select(Imlib_Image img, int sw, int sh,
     /* footer hint */
     launcher_draw_text_centred(img, cx, sh - 40,
         "Up/Down: Select   A/Enter: Launch   B/Esc: Back", FONT_SM, LC_DIM);
-}
-
-/* ─── game description overlay ──────────────────────────────────────────── */
-
-/* Helper: count total lines in word-wrapped text (does not draw) */
-static int count_wrapped_lines(const char *text, int max_w, int font_id)
-{
-    int total_lines = 0;
-    char line[512] = {};
-    const char *p = text;
-
-    while (*p) {
-        /* collect next word */
-        const char *word_end = p;
-        bool is_newline = (*p == '\n');
-        if (!is_newline) {
-            while (*word_end && *word_end != ' ' && *word_end != '\n') word_end++;
-        }
-
-        char word[256] = {};
-        int wlen = (int)(word_end - p);
-        if (wlen > 0) {
-            strncpy(word, p, (size_t)wlen < sizeof(word) - 1 ? (size_t)wlen : sizeof(word) - 1);
-        }
-
-        /* try appending word to current line */
-        char test[1024];
-        if (line[0] && !is_newline) {
-            snprintf(test, sizeof(test), "%s %s", line, word);
-        } else {
-            strncpy(test, word, sizeof(test) - 1);
-        }
-
-        bool flush = is_newline || (launcher_text_width(test, font_id) > max_w && line[0]);
-
-        if (flush) {
-            if (line[0]) {
-                total_lines++;
-            }
-            strncpy(line, word, sizeof(line) - 1);
-        } else {
-            strncpy(line, test, sizeof(line) - 1);
-        }
-
-        p = word_end;
-        if (*p == ' ' || *p == '\n') p++;
-    }
-
-    /* count last line */
-    if (line[0]) total_lines++;
-
-    return total_lines;
-}
-
-/* Helper: render word-wrapped text with scroll offset. Returns lines drawn. */
-static int draw_wrapped_text(Imlib_Image img, int x, int y, int max_w, int max_h,
-                              const char *text, int font_id, uint32_t col, int skip_lines)
-{
-    int lh = launcher_text_height(font_id) + 5;
-    int line_y = y;
-    char line[512] = {};
-    const char *p = text;
-    int drawn = 0, skipped = 0;
-
-    while (*p && line_y < y + max_h) {
-        /* collect next word */
-        const char *word_end = p;
-        bool is_newline = (*p == '\n');
-        if (!is_newline) {
-            while (*word_end && *word_end != ' ' && *word_end != '\n') word_end++;
-        }
-
-        char word[256] = {};
-        int wlen = (int)(word_end - p);
-        if (wlen > 0) {
-            strncpy(word, p, (size_t)wlen < sizeof(word) - 1 ? (size_t)wlen : sizeof(word) - 1);
-        }
-
-        /* try appending word to current line */
-        char test[1024];
-        if (line[0] && !is_newline) {
-            snprintf(test, sizeof(test), "%s %s", line, word);
-        } else {
-            strncpy(test, word, sizeof(test) - 1);
-        }
-
-        bool flush = is_newline || (launcher_text_width(test, font_id) > max_w && line[0]);
-
-        if (flush) {
-            if (line[0]) {
-                if (skipped >= skip_lines) {
-                    launcher_draw_text(img, x, line_y, line, font_id, col);
-                    line_y += lh;
-                    drawn++;
-                } else {
-                    skipped++;
-                }
-            }
-            strncpy(line, word, sizeof(line) - 1);
-        } else {
-            strncpy(line, test, sizeof(line) - 1);
-        }
-
-        p = word_end;
-        if (*p == ' ' || *p == '\n') p++;
-    }
-
-    /* flush last line */
-    if (line[0] && line_y < y + max_h && skipped >= skip_lines) {
-        launcher_draw_text(img, x, line_y, line, font_id, col);
-        drawn++;
-    }
-
-    return drawn;
-}
-
-void launcher_draw_description(Imlib_Image img, int sw, int sh,
-                                const char *game_name, const char *system,
-                                const char *text, int state, int scroll, uint32_t frame_time,
-                                const char *error_msg)
-{
-    imlib_context_set_image(img);
-
-    /* full-screen overlay background (consistent with other modals) */
-    set_col(LC_OVERLAY);
-    imlib_image_fill_rectangle(0, 0, sw, sh);
-
-    int cx = sw / 2;
-    int header_y = 40;
-    int content_y = 120;
-    int content_h = sh - 120 - 60;  /* leave room for footer */
-
-    /* title: game name */
-    launcher_draw_text_centred(img, cx, header_y, game_name, FONT_TITLE, LC_HI);
-
-    /* subtitle: system name */
-    launcher_draw_text_centred(img, cx, header_y + 38, system, FONT_SM, LC_DIM);
-
-    /* content area */
-    int content_x = 60;
-    int content_w = sw - 120;
-
-    if (state == LAUNCHER_DESC_LOADING) {
-        /* show loading message with animated dots */
-        int dot_phase = (frame_time / 400) % 4;  /* cycle through 0, 1, 2, 3 every 1.6 seconds */
-        char loading_msg[32];
-        if (dot_phase == 0)      strcpy(loading_msg, "Fetching description.");
-        else if (dot_phase == 1) strcpy(loading_msg, "Fetching description..");
-        else                      strcpy(loading_msg, "Fetching description...");
-        launcher_draw_text_centred(img, cx, content_y + 60, loading_msg, FONT_BIG, LC_TEXT);
-    } else if (state == LAUNCHER_DESC_READY) {
-        /* draw wrapped text with scrolling */
-        int lines_drawn = draw_wrapped_text(img, content_x, content_y, content_w, content_h,
-                                            text, FONT_SM, LC_TEXT, scroll);
-
-        /* scroll indicators (▲/▼) */
-        int total_lines = count_wrapped_lines(text, content_w, FONT_SM);
-        int lh = launcher_text_height(FONT_SM) + 5;
-        int max_visible = content_h / lh;
-
-        /* show ▲ if scrolled down */
-        if (scroll > 0) {
-            launcher_draw_text_centred(img, cx, content_y - 20, "▲", FONT_SM, LC_DIM);
-        }
-
-        /* show ▼ if more content below */
-        if (scroll + max_visible < total_lines) {
-            launcher_draw_text_centred(img, cx, content_y + content_h + 5, "▼", FONT_SM, LC_DIM);
-        }
-    } else {
-        /* LAUNCHER_DESC_NODATA - show error message if available */
-        if (error_msg && error_msg[0]) {
-            launcher_draw_text_centred(img, cx, content_y + 40, "Failed to load description:", FONT_SM, LC_DIM);
-            launcher_draw_text_centred(img, cx, content_y + 75, error_msg, FONT_BIG, LC_TEXT);
-        } else {
-            launcher_draw_text_centred(img, cx, content_y + 60, "No description available.", FONT_BIG, LC_DIM);
-        }
-    }
-
-    /* footer hint */
-    launcher_draw_text_centred(img, cx, sh - 30,
-        "Up/Down: Scroll   B/Esc: Back", FONT_SM, LC_DIM);
 }
 
 /* ─── rating modal ──────────────────────────────────────────────────────── */

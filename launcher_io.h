@@ -7,12 +7,16 @@
 const CoreMapEntry *launcher_find_core(const char *system);
 
 /* library */
-/* Scan the remote SFTP server and generate/refresh CSV files in base_dir/lists/.
-   Skips systems whose CSV is less than 24 hours old.  No-op if SFTP not configured.
-   Called automatically from lib_loader_thread before launcher_load_library(). */
-bool           launcher_scan_remote(const char *base_dir);
-bool           launcher_load_library(const char *base_dir, LauncherSystem **out, int *count_out);
 void           launcher_free_library(LauncherSystem *systems, int count);
+/* Progress of a library load in flight. Best-effort — values update from
+   the loader thread, read from the UI thread for a splash progress bar.
+   `total` is 0 until the CSV directory has been enumerated. */
+void           launcher_load_progress(int *done_out, int *total_out);
+/* launcher_load_progress_set: called ONLY from the loader thread
+   (lib_loader_thread in launcher.cpp). The setter and getter read/write
+   volatile ints without a lock — best-effort snapshots only. Do not call
+   from other threads. */
+void           launcher_load_progress_set(int done, int total);
 
 /* state */
 bool           launcher_load_state(const char *path, LauncherState *st);
@@ -26,19 +30,5 @@ LauncherSystem *launcher_build_all_systems(const LauncherSystem *real, int real_
                                             const LauncherState *st, int *total_out);
 void            launcher_free_virtual_systems(LauncherSystem *all, int total, int real_count);
 
-/* ROM download */
-void           launcher_cache_path(const LauncherGame *game, const char *base_dir, char *out, size_t out_sz);
-bool           launcher_start_download(const LauncherGame *game, const char *base_dir);
-int            launcher_poll_download(const LauncherGame *game, const char *base_dir);
-void           launcher_cancel_download(void);
-
-/* MGL / launch */
-bool           launcher_write_mgl(const LauncherGame *game);
-void           launcher_load_core(const char *mgl_path);
-
-/* cover cache */
-void           launcher_cover_cache_tick(void);
-Imlib_Image    launcher_cover_get(const char *path);
-uint32_t       launcher_cover_fade_alpha(const char *path);
 
 #endif /* LAUNCHER_IO_H */

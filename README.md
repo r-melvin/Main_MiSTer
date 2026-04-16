@@ -6,6 +6,20 @@ For the purposes of getting google to crawl the wiki, here's a link to the (not 
 
 If you're a human looking for the wiki, that's [here](https://github.com/MiSTer-devel/Wiki_MiSTer/wiki)
 
+## Launcher Configuration
+
+The game launcher is configured via `MiSTer.ini` (under `[MiSTer]`) or `launcher.cfg`. Key options:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `LAUNCHER` | `1` | Enable the game launcher UI |
+| `LAUNCHER_PATH` | `/media/fat/launcher` | Launcher data directory (cache, covers, themes, state) |
+| `LAUNCHER_GAMES_PATH` | `/media/fat/games` | Root directory for ROM files — one subdirectory per system, e.g. `games/SNES/` |
+| `LAUNCHER_PARTICLES` | `1` | Particle background animation (set to `0` to save ~2 ms/frame) |
+| `LAUNCHER_THEME` | `dark` | Theme name; must match a subdirectory under `{LAUNCHER_PATH}/themes/` |
+
+Covers are loaded from `<launcher_path>/covers/<System>/<stem>.jpg` (or `.png`). Drop image files in there to make them show up — there is no auto-download.
+
 ## Building
 
 To compile this application, read more about that [here](https://mister-devel.github.io/MkDocs_MiSTer/developer/mistercompile/#general-prerequisites-for-arm-cross-compiling)
@@ -28,97 +42,6 @@ make PROFILING=1
 ```
 
 When built with `PROFILING=1`, the OSD responsiveness can be measured during fast menu navigation. Performance spikes will be reported to stdout showing nested timing information.
-
-## Remote ROM Library
-
-The launcher can pull ROMs from a remote server (NAS, PC, or any Linux host) over SSH using rsync. Downloads are resumable — if interrupted the next attempt picks up where it left off rather than restarting from scratch.
-
-### How it works
-
-1. At launch the launcher SSHes into the remote host and lists each system directory, caching the results as CSV files locally (refreshed every 24 hours).
-2. When you select a game the ROM is downloaded to a local cache on the SD card before loading.
-3. The launcher **only ever reads** from the remote server — it never writes, modifies, or deletes remote files.
-
-### Server-side setup
-
-The recommended approach is a dedicated read-only SSH user. The user has no write permission to the games directory at the filesystem level, so even if SSH auth were compromised no files could be altered.
-
-**1. Create a dedicated user on the server:**
-```bash
-sudo useradd -r -s /bin/bash mister-roms
-```
-
-**2. Set up the games directory with read-only access for that user:**
-```bash
-# Give mister-roms read + execute on the games tree, no write anywhere
-sudo setfacl -R -m u:mister-roms:r-x /path/to/games
-sudo setfacl -R -d -m u:mister-roms:r-x /path/to/games
-```
-If your server does not have ACL support, use group permissions instead:
-```bash
-sudo chown -R root:mister-roms /path/to/games
-sudo chmod -R 750 /path/to/games
-```
-
-**3. Generate an SSH key pair (run this on your PC or MiSTer):**
-```bash
-ssh-keygen -t ed25519 -f mister_roms_key -N ""
-# Creates: mister_roms_key  (private — goes on MiSTer)
-#          mister_roms_key.pub  (public — goes on server)
-```
-
-**4. Install the public key on the server with connection restrictions:**
-
-Append to `/home/mister-roms/.ssh/authorized_keys`:
-```
-no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty ssh-ed25519 AAAA... mister-roms
-```
-The `no-pty` and forwarding restrictions prevent interactive logins and tunnelling while still allowing SSH commands and rsync.
-
-**5. Copy the private key to the MiSTer:**
-```bash
-scp mister_roms_key root@mister:/media/fat/launcher/mister_roms_key
-chmod 600 /media/fat/launcher/mister_roms_key  # on the MiSTer
-```
-
-### Remote directory layout
-
-Organise ROMs on the server by system name matching MiSTer core names (case-sensitive):
-```
-/path/to/games/
-├── SNES/
-├── NES/
-├── GBA/
-├── GB/
-├── GBC/
-├── Genesis/
-├── MegaDrive/
-├── PSX/
-├── N64/
-└── ...
-```
-See `launcher.cfg.example` for the full list of supported system names.
-
-### MiSTer.ini configuration
-
-Add the following to `/media/fat/MiSTer.ini`. See `launcher.cfg.example` for all available options.
-
-```ini
-[MiSTer]
-LAUNCHER=1
-LAUNCHER_PATH=/media/fat/launcher
-
-; Remote server connection (SSH key auth recommended — avoid SFTP_PASS in plain text)
-SFTP_HOST=192.168.1.100
-SFTP_USER=mister-roms
-SFTP_KEY_PATH=/media/fat/launcher/mister_roms_key
-SFTP_BASE_PATH=/path/to/games
-SFTP_PORT=22
-```
-
-Password auth is supported via `SFTP_PASS` but SSH key auth is strongly recommended — passwords stored in `MiSTer.ini` are plain text.
-
----
 
 ## Hardware Optimization
 

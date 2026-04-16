@@ -50,9 +50,6 @@ int  launcher_game_metadata_width(const LauncherGame *game);
 void launcher_draw_settings(Imlib_Image img, int screen_w, int screen_h, int selected,
                             uint8_t particles, const char *theme, uint8_t show_perf);
 
-/* cover batch download progress modal */
-void launcher_draw_cover_dl(Imlib_Image img, int sw, int sh, int done, int total);
-
 /* bulk select badge */
 void launcher_draw_sel_badge(Imlib_Image img, int x, int y);
 
@@ -63,12 +60,6 @@ void launcher_draw_version_select(Imlib_Image img, int sw, int sh,
 
 /* variant badge */
 void launcher_draw_variant_badge(Imlib_Image img, int x, int y, const char *label);
-
-/* game description overlay */
-void launcher_draw_description(Imlib_Image img, int sw, int sh,
-                                const char *game_name, const char *system,
-                                const char *text, int state, int scroll, uint32_t frame_time,
-                                const char *error_msg);
 
 /* rating modal */
 void launcher_draw_rating_modal(Imlib_Image img, int sw, int sh,

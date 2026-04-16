@@ -128,7 +128,7 @@ Copy these to your SD card and modify as needed:
 Add to `MiSTer.ini` (in `[LAUNCHER]` section if it exists):
 ```ini
 LAUNCHER=1
-LAUNCHER_PATH=/media/fat/remote_ui
+LAUNCHER_PATH=/media/fat/launcher
 LAUNCHER_THEME=dark
 LAUNCHER_PARTICLES=1
 ```

@@ -16,6 +16,10 @@
 #include "launcher.h"
 #include "launcher_draw.h"
 #include "launcher_io.h"
+#include "launcher_cover.h"
+#include "launcher_theme.h"
+#include "launcher_launch.h"
+#include "launcher_scan.h"
 #include "lib/imlib2/Imlib2.h"
 #include "cfg.h"
 #include "video.h"
@@ -83,7 +87,6 @@ static bool   g_fav_filter = false;
 
 /* spinners / timers */
 static float  g_spinner_angle = 0.0f;
-static float  g_splash_dots   = 0.0f;
 static float  g_splash_bar    = 0.0f;
 static uint32_t g_splash_timer = 0;
 static bool   g_splash_min_done = false;
@@ -107,12 +110,6 @@ static LauncherMode g_settings_prev_mode = LMODE_SYSTEMS;  /* remember which mod
 static const char *g_theme_names[] = { "dark", "light", "retro", "purple" };
 static const int g_theme_count = 4;
 
-/* cover batch download modal */
-static int g_cdl_total = 0;        /* games queued for this batch */
-static int g_cdl_done = 0;         /* covers confirmed on disk so far */
-static int g_cdl_check_idx = 0;    /* sliding-window cursor for stat() scan */
-static LauncherSystem *g_cdl_sys = NULL;  /* pointer to system being scanned */
-
 /* bulk select */
 static bool g_multi_mode = false;
 static bool g_sel_bits[LAUNCHER_MAX_GAMES] = {};
@@ -127,11 +124,6 @@ static int g_ver_indices[LAUNCHER_MAX_GAMES] = {};
 static int g_ver_count = 0;
 static int g_ver_sel = 0;
 
-/* description overlay */
-static char g_desc_game_name[128] = {};
-static char g_desc_system[64] = {};
-static int  g_desc_scroll = 0;
-
 /* rating selector */
 static int g_rating_sel = 0;   /* 1–5 star selection in picker, 0 = cancel */
 
@@ -142,6 +134,7 @@ static LauncherGame g_active_game = {};
 static uint32_t g_repeat_timer = 0;
 static uint32_t g_repeat_key   = 0;
 static bool     g_first_repeat = false;
+static int      g_repeat_count = 0;  /* consecutive repeats of the same key */
 
 /* library loading thread */
 static pthread_t  g_lib_thread;
@@ -238,10 +231,20 @@ static void input_tick(void)
 
     if (raw && !(raw & UPSTROKE)) {
         if (raw == g_repeat_key) {
-            uint32_t delay = g_first_repeat ? LAUNCHER_REPEAT_DELAY : LAUNCHER_REPEAT_RATE;
+            uint32_t delay;
+            if (g_first_repeat) {
+                delay = LAUNCHER_REPEAT_DELAY;
+            } else {
+                /* Accelerate after sustained hold: fewer, further apart ticks
+                   at first then tighter once the user clearly means "fast". */
+                delay = LAUNCHER_REPEAT_RATE;
+                if (g_repeat_count >= 25)      delay = 15;
+                else if (g_repeat_count >= 10) delay = 25;
+            }
             if ((ms_now() - g_repeat_timer) >= delay) {
                 g_repeat_timer   = ms_now();
                 g_first_repeat   = false;
+                g_repeat_count++;
                 g_input_key      = raw;
             } else {
                 g_input_key = 0;
@@ -250,10 +253,11 @@ static void input_tick(void)
             g_repeat_key    = raw;
             g_repeat_timer  = ms_now();
             g_first_repeat  = true;
+            g_repeat_count  = 0;
             g_input_key     = raw;
         }
     } else {
-        if (raw & UPSTROKE) g_repeat_key = 0;
+        if (raw & UPSTROKE) { g_repeat_key = 0; g_repeat_count = 0; }
         g_input_key = raw;
     }
 }
@@ -286,12 +290,59 @@ static void backfill_play_data(LauncherSystem *systems, int sys_count,
 
 static void *lib_loader_thread(void *)
 {
-    /* If SFTP is configured, scan the remote server and generate/refresh CSVs
-       before loading the library.  Fresh CSVs (<24h) are skipped automatically. */
-    if (cfg.sftp_host[0])
-        launcher_scan_remote(g_base_dir);
+    const char *games_dir = cfg.launcher_games_path;
 
-    bool ok = launcher_load_library(g_base_dir, &g_real_sys, &g_real_cnt);
+    char cache_path[1024];
+    snprintf(cache_path, sizeof(cache_path), "%s/cache/library.bin", g_base_dir);
+
+    char covers_dir[1024];
+    snprintf(covers_dir, sizeof(covers_dir), "%s/covers", g_base_dir);
+
+    char cache_dir[1024];
+    snprintf(cache_dir, sizeof(cache_dir), "%s/cache", g_base_dir);
+    mkdir(cache_dir, 0755);
+
+    /* Defensive: if a previous load left a library allocated, release it
+       before reusing the pointer. Today lib_loader_thread only runs once
+       per session, but guard against re-init regressions. */
+    if (g_real_sys) {
+        launcher_free_library(g_real_sys, g_real_cnt);
+        g_real_sys = NULL;
+        g_real_cnt = 0;
+    }
+
+    bool ok = false;
+
+    /* Fast path: use the on-disk cache if all mtimes match. */
+    if (launcher_scan_cache_load(cache_path, games_dir, &g_real_sys, &g_real_cnt)) {
+        ok = true;
+        launcher_load_progress_set(1, 1);  /* cache hit: show full bar */
+    } else {
+        /* Slow path: walk every system listed in the core map. */
+        g_real_sys = (LauncherSystem*)calloc(launcher_core_map_count,
+                                              sizeof(LauncherSystem));
+        g_real_cnt = 0;
+        launcher_load_progress_set(0, launcher_core_map_count);
+
+        for (int i = 0; i < launcher_core_map_count; i++) {
+            const char *sys = launcher_core_map[i].system;
+            LauncherGame *games = NULL;
+            int n = launcher_scan_system(sys, games_dir, covers_dir, &games);
+            launcher_load_progress_set(i + 1, launcher_core_map_count);
+            if (n <= 0) { free(games); continue; }
+
+            LauncherSystem *s = &g_real_sys[g_real_cnt++];
+            strncpy(s->name, sys, sizeof(s->name) - 1);
+            s->games      = games;
+            s->game_count = n;
+            s->is_virtual = 0;
+        }
+        ok = (g_real_cnt > 0);
+
+        if (ok)
+            launcher_scan_cache_save(cache_path, games_dir, g_real_sys, g_real_cnt);
+    }
+
     launcher_load_state(g_state_path, &g_state);
     launcher_state_apply_play_time(&g_state, g_state_path);
     backfill_play_data(g_real_sys, g_real_cnt, &g_state);
@@ -304,10 +355,8 @@ static void *lib_loader_thread(void *)
 
 static void rebuild_all_systems(void)
 {
-    if (g_all_sys) {
-        int extra = g_all_cnt - g_real_cnt;
+    if (g_all_sys)
         launcher_free_virtual_systems(g_all_sys, g_all_cnt, g_real_cnt);
-    }
     g_all_sys = launcher_build_all_systems(g_real_sys, g_real_cnt, &g_state, &g_all_cnt);
 }
 
@@ -538,23 +587,38 @@ static void draw_splash(void)
     launcher_draw_text_centred(fb, cx, cy - 70, "MiSTer Launcher", FONT_TITLE, LC_HI);
     launcher_draw_text_centred(fb, cx, cy - 24, "Game Library", FONT_BIG, LC_TEXT);
 
-    /* animated dots */
-    uint32_t elapsed = ms_now() - g_splash_timer;
-    int dots = (elapsed / 450) % 4;
-    char loading[32];
-    strcpy(loading, "Loading");
-    for (int i = 0; i < dots; i++) strcat(loading, ".");
+    /* library-load progress if known, otherwise animated dots */
+    int load_done = 0, load_total = 0;
+    launcher_load_progress(&load_done, &load_total);
+
+    char loading[64];
+    if (load_total > 0) {
+        snprintf(loading, sizeof(loading), "Loading library — %d / %d systems",
+                 load_done, load_total);
+    } else {
+        uint32_t elapsed = ms_now() - g_splash_timer;
+        int dots = (elapsed / 450) % 4;
+        strcpy(loading, "Loading");
+        for (int i = 0; i < dots; i++) strcat(loading, ".");
+    }
     launcher_draw_text_centred(fb, cx, cy + 32, loading, FONT_SM, LC_DIM);
 
-    /* pulsing bar */
-    float bar_t = sinf(g_splash_bar) * 0.5f + 0.5f;
+    /* Progress bar: real fill when total is known, pulsing sweep otherwise. */
     int track_w = 300, track_h = 8;
     int tx = cx - track_w / 2;
     int ty = g_fb_h - 55;
     launcher_fill_rect_rounded(fb, tx, ty, track_w, track_h, 4, LC_CARD);
-    int hi_w = 80;
-    int hi_x = tx + (int)((track_w - hi_w) * bar_t);
-    launcher_fill_rect_rounded(fb, hi_x, ty, hi_w, track_h, 4, LC_HI);
+    if (load_total > 0) {
+        int clamped = (load_done > load_total) ? load_total : load_done;
+        int fill_w = (track_w * clamped) / load_total;
+        if (fill_w > 0)
+            launcher_fill_rect_rounded(fb, tx, ty, fill_w, track_h, 4, LC_HI);
+    } else {
+        float bar_t = sinf(g_splash_bar) * 0.5f + 0.5f;
+        int hi_w = 80;
+        int hi_x = tx + (int)((track_w - hi_w) * bar_t);
+        launcher_fill_rect_rounded(fb, hi_x, ty, hi_w, track_h, 4, LC_HI);
+    }
 
     /* version */
     launcher_draw_text_centred(fb, cx, g_fb_h - 32, "v2 | MiSTer FPGA", FONT_SM, LC_DIM);
@@ -634,7 +698,6 @@ static void draw_stats(void)
     draw_background(fb);
 
     int cx = g_fb_w / 2;
-    int cy = g_fb_h / 2;
 
     /* title */
     launcher_draw_text_centred(fb, cx, 40, "LIBRARY STATISTICS", FONT_TITLE, LC_HI);
@@ -791,7 +854,6 @@ static void draw_games(void)
             launcher_draw_text(fb, LAUNCHER_PAD, 16, "[★ Favourites]", FONT_TITLE, LC_FAV);
             char sys_name[80];
             snprintf(sys_name, sizeof(sys_name), "%s", g_all_sys[g_sys_sel].name);
-            int tw = launcher_text_width(sys_name, FONT_TITLE);
             launcher_draw_text(fb, LAUNCHER_PAD + launcher_text_width("[★ Favourites] ", FONT_TITLE), 16,
                              sys_name, FONT_TITLE, LC_HI);
         } else {
@@ -827,6 +889,19 @@ static void draw_games(void)
         launcher_draw_text_centred(fb, g_fb_w / 2, g_fb_h / 2 - 20,
             "No favourites in this system — press F to show all",
             FONT_BIG, LC_DIM);
+    } else if (!g_search_mode && !g_fav_filter && g_filtered_cnt == 0) {
+        /* empty system folder */
+        launcher_draw_text_centred(fb, g_fb_w / 2, g_fb_h / 2 - 28,
+            "No games found",
+            FONT_BIG, LC_TEXT);
+        char hint[512];
+        const char *sys_name = (g_sys_sel >= 0 && g_sys_sel < g_all_cnt)
+                                ? g_all_sys[g_sys_sel].name : "this system";
+        snprintf(hint, sizeof(hint),
+                 "Add ROMs to %s/games/%s/ and restart the launcher",
+                 g_base_dir, sys_name);
+        launcher_draw_text_centred(fb, g_fb_w / 2, g_fb_h / 2 + 8,
+            hint, FONT_SM, LC_DIM);
     }
 
     /* footer bar */
@@ -876,24 +951,7 @@ static void draw_launching_overlay(void)
 
     /* spinner + message */
     launcher_draw_spinner(fb, cx, cy - 40, 22, g_spinner_angle, LC_HI);
-    launcher_draw_text_centred(fb, cx, cy + 10, "Downloading…", FONT_BIG, LC_TEXT);
-
-    /* show bytes downloaded so far by checking the .part file size */
-    if (g_active_game.path[0]) {
-        char local[600], part[608];
-        launcher_cache_path(&g_active_game, g_base_dir, local, sizeof(local));
-        snprintf(part, sizeof(part), "%s.part", local);
-        struct stat pst;
-        if (stat(part, &pst) == 0 && pst.st_size > 0) {
-            char prog[64];
-            if (pst.st_size >= 1024 * 1024)
-                snprintf(prog, sizeof(prog), "%.1f MB downloaded", pst.st_size / (1024.0 * 1024.0));
-            else
-                snprintf(prog, sizeof(prog), "%.0f KB downloaded", pst.st_size / 1024.0);
-            launcher_draw_text_centred(fb, cx, cy + 36, prog, FONT_SM, LC_DIM);
-        }
-    }
-
+    launcher_draw_text_centred(fb, cx, cy + 10, "Preparing…", FONT_BIG, LC_TEXT);
     launcher_draw_text_centred(fb, cx, cy + 60, "B/Esc: Cancel", FONT_SM, LC_DIM);
 }
 
@@ -1480,7 +1538,7 @@ draw_toast:
 void launcher_init(void)
 {
     /* base paths from INI config */
-    const char *bd = (cfg.launcher_path[0]) ? cfg.launcher_path : "/media/fat/remote_ui";
+    const char *bd = (cfg.launcher_path[0]) ? cfg.launcher_path : "/media/fat/launcher";
     strncpy(g_base_dir, bd, sizeof(g_base_dir) - 1);
     snprintf(g_state_path, sizeof(g_state_path), "%s/state.dat", g_base_dir);
 
@@ -1549,7 +1607,6 @@ void launcher_shutdown(void)
         g_real_sys = NULL; g_real_cnt = 0;
     }
     if (g_all_sys) {
-        int extra = g_all_cnt - g_real_cnt;
         launcher_free_virtual_systems(g_all_sys, g_all_cnt, g_real_cnt);
         g_all_sys = NULL; g_all_cnt = 0;
     }
@@ -1558,25 +1615,6 @@ void launcher_shutdown(void)
     g_filtered_cnt = 0;
 
     video_fb_enable(0, 0);
-}
-
-/* ─── cover batch download ──────────────────────────────────────────────── */
-
-static void enter_cover_dl(void)
-{
-    /* point to current system and count games with cover_path */
-    g_cdl_sys = &g_all_sys[g_sys_sel];
-    g_cdl_total = 0;
-    for (int i = 0; i < g_cdl_sys->game_count; i++) {
-        if (g_cdl_sys->games[i].cover_path[0] != '\0') {
-            g_cdl_total++;
-            /* queue the cover for loading */
-            launcher_cover_request(&g_cdl_sys->games[i]);
-        }
-    }
-    g_cdl_done = 0;
-    g_cdl_check_idx = 0;
-    g_mode = LMODE_COVER_DL;
 }
 
 /* ─── bulk select ────────────────────────────────────────────────────────── */
@@ -1623,7 +1661,11 @@ int launcher_tick(void)  /* returns 0 to exit to stock MiSTer menu */
 
     /* ── per-frame updates ── */
     if (cfg.launcher_particles) launcher_particles_update(g_fb_h);
-    int covers_loaded = launcher_cover_flush(4);
+    /* Flush decoded covers until either 8 are processed or ~2 ms of work
+       has elapsed. On a device where Imlib scales sporadically slow, this
+       keeps the frame time bounded; on a fast frame we still soak up the
+       backlog quickly. */
+    int covers_loaded = launcher_cover_flush_budget_us(8, 2000);
     launcher_cover_cache_tick();
     g_spinner_angle += 0.10f;
     g_splash_bar    += 0.030f;
@@ -1669,7 +1711,8 @@ int launcher_tick(void)  /* returns 0 to exit to stock MiSTer menu */
                 fade_begin_out(on_enter_systems);
             } else {
                 snprintf(g_error_msg, sizeof(g_error_msg),
-                         "Failed to load library from lists");
+                         "No games found — check %s",
+                         cfg.launcher_games_path);
                 g_mode = LMODE_ERROR;
             }
         }
@@ -1682,8 +1725,8 @@ int launcher_tick(void)  /* returns 0 to exit to stock MiSTer menu */
 
         if (key_down(KEY_LEFT) || key_down(KEY_RIGHT)) {
             int dx = key_down(KEY_RIGHT) ? 1 : -1;
-            int new_sel = g_sys_sel + dx;
-            if (new_sel >= 0 && new_sel < n) {
+            int new_sel = launcher_wrap_index(g_sys_sel, dx, n);
+            if (n > 0 && new_sel != g_sys_sel) {
                 g_sys_sel   = new_sel;
                 g_sys_scale = 0.92f;
                 g_sys_float_y = 5.0f;
@@ -1733,22 +1776,10 @@ int launcher_tick(void)  /* returns 0 to exit to stock MiSTer menu */
             }
         }
 
-        /* multi-select mode & cover download toggle & description (before search) */
+        /* multi-select mode toggle (before search) */
         if (key_up_pressed(KEY_INSERT)) {
             toggle_multi_mode();
         }
-        if (key_up_pressed(KEY_D) && !g_search_mode && !g_multi_mode) {
-            enter_cover_dl();
-        }
-        if (key_up_pressed(KEY_I) && !g_search_mode && g_filtered_cnt > 0) {
-            const LauncherGame *game = &g_filtered[g_game_sel];
-            strncpy(g_desc_game_name, game->name,   sizeof(g_desc_game_name) - 1);
-            strncpy(g_desc_system,    game->system, sizeof(g_desc_system) - 1);
-            g_desc_scroll = 0;
-            launcher_desc_request(game, g_base_dir);
-            g_mode = LMODE_DESCRIPTION;
-        }
-
         if (key_up_pressed(KEY_R) && !g_search_mode && g_filtered_cnt > 0) {
             /* pre-select current rating so cursor starts on it */
             int cur = g_filtered[g_game_sel].user_rating;
@@ -1941,11 +1972,15 @@ int launcher_tick(void)  /* returns 0 to exit to stock MiSTer menu */
                 /* process will restart — we're done */
                 return 0;
             } else {
-                snprintf(g_error_msg, sizeof(g_error_msg), "Failed to launch game");
+                const char *mgl_err = launcher_mgl_error();
+                snprintf(g_error_msg, sizeof(g_error_msg), "%s",
+                         mgl_err[0] ? mgl_err : "Could not write launch file.");
                 g_mode = LMODE_ERROR;
             }
         } else if (status == -1) {
-            snprintf(g_error_msg, sizeof(g_error_msg), "Download failed");
+            const char *dl_err = launcher_download_error();
+            snprintf(g_error_msg, sizeof(g_error_msg), "%s",
+                     dl_err[0] ? dl_err : "Could not prepare ROM for launch.");
             g_mode = LMODE_ERROR;
         }
         draw_launching_overlay();
@@ -1962,31 +1997,6 @@ int launcher_tick(void)  /* returns 0 to exit to stock MiSTer menu */
         if (k && !(k & UPSTROKE)) { g_mode = LMODE_GAMES; }
         launcher_draw_help(cur_fb(), g_fb_w, g_fb_h);
         break;
-
-    case LMODE_COVER_DL: {
-        /* sliding window: stat() 10 covers/frame, count successes */
-        if (g_cdl_sys && g_cdl_total > 0) {
-            int check_count = (g_cdl_total - g_cdl_done < 10) ? (g_cdl_total - g_cdl_done) : 10;
-            for (int i = 0; i < check_count && g_cdl_check_idx < g_cdl_sys->game_count; i++, g_cdl_check_idx++) {
-                if (g_cdl_sys->games[g_cdl_check_idx].cover_path[0] != '\0') {
-                    struct stat st;
-                    if (stat(g_cdl_sys->games[g_cdl_check_idx].cover_path, &st) == 0 && st.st_size > 0) {
-                        g_cdl_done++;
-                    }
-                }
-            }
-        }
-
-        /* auto-close when done or ESC */
-        bool cancel = key_up_pressed(KEY_ESC);
-        if (cancel || g_cdl_done >= g_cdl_total) {
-            g_mode = LMODE_GAMES;
-        }
-
-        draw_games();  /* game grid as background layer */
-        launcher_draw_cover_dl(cur_fb(), g_fb_w, g_fb_h, g_cdl_done, g_cdl_total);
-        break;
-    }
 
     case LMODE_VERSION_SELECT: {
         if (key_up_pressed(KEY_UP))   g_ver_sel = (g_ver_sel - 1 + g_ver_count) % g_ver_count;
@@ -2006,23 +2016,6 @@ int launcher_tick(void)  /* returns 0 to exit to stock MiSTer menu */
         draw_games();
         launcher_draw_version_select(cur_fb(), g_fb_w, g_fb_h,
                                      g_filtered, g_ver_indices, g_ver_count, g_ver_sel);
-        break;
-    }
-
-    case LMODE_DESCRIPTION: {
-        int state = launcher_desc_state();
-
-        if (key_up_pressed(KEY_ESC)) {
-            g_mode = LMODE_GAMES;
-        } else if (state == LAUNCHER_DESC_READY) {
-            if (key_down(KEY_UP))   g_desc_scroll = (g_desc_scroll > 0) ? g_desc_scroll - 1 : 0;
-            if (key_down(KEY_DOWN)) g_desc_scroll++;
-        }
-
-        launcher_draw_description(cur_fb(), g_fb_w, g_fb_h,
-                                  g_desc_game_name, g_desc_system,
-                                  launcher_desc_text(), state, g_desc_scroll, ms_now(),
-                                  launcher_desc_error());
         break;
     }
 
